@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  cc-proxy:
+    build: .
+    image: cc-proxy:1.0
+    container_name: cc-proxy
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - .:/opt/app
