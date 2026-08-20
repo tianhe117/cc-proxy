@@ -7,6 +7,3 @@ __pycache__/
 config.json
 logs/
 .env
-
-# Docker
-docker-compose.override.yml

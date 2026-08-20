@@ -18,13 +18,7 @@
 docker compose up -d
 ```
 
-如需开启 DEBUG 日志,复制 override 文件并修改:
-
-```bash
-cp docker-compose.override.yml.example docker-compose.override.yml
-# 编辑 DEBUG=TRUE
-docker compose up -d
-```
+如需开启 DEBUG 日志,在 `.env` 中设置 `DEBUG=true` 后重启容器。
 
 后续更新:
 
