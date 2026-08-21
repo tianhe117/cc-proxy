@@ -18,6 +18,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE_PATH = os.path.join(_SCRIPT_DIR, "config.json")
 LOG_DIR = os.environ.get("LOG_DIR", os.path.join(_SCRIPT_DIR, "logs"))
 LOG_BODY_MAX_CHARS = 2000                             # 日志里 body 的最大字符数,超长截断
+USAGE_JSON_MAX_BYTES = 2 * 1024 * 1024               # 非流式 JSON 响应的最大旁路解析大小
 LOGGER_NAME = "cc-proxy"
 
 # ---------- 日志 ----------
@@ -85,6 +86,103 @@ def log_forwarded(method, url, headers, body):
 def log_response(status, elapsed):
     """记录上游响应状态码与耗时。"""
     logger.info("响应 status=%s 耗时=%.2fs", status, elapsed)
+
+
+def _merge_usage(target, source):
+    """递归合并 usage；流式响应里后出现的累计值覆盖前值。"""
+    for key, value in source.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_usage(target[key], value)
+        else:
+            target[key] = value
+
+
+def _cache_hit_rate(usage):
+    """兼容 Anthropic 与 OpenAI usage，返回可比较的缓存命中率。"""
+    cache_read = usage.get("cache_read_input_tokens")
+    if isinstance(cache_read, (int, float)):
+        input_tokens = usage.get("input_tokens", 0)
+        cache_creation = usage.get("cache_creation_input_tokens", 0)
+        if all(isinstance(v, (int, float)) for v in (input_tokens, cache_creation)):
+            total = input_tokens + cache_creation + cache_read
+            return cache_read / total if total else None
+
+    prompt_tokens = usage.get("prompt_tokens")
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+    if isinstance(prompt_tokens, (int, float)) and isinstance(details, dict):
+        cached = details.get("cached_tokens")
+        if isinstance(cached, (int, float)) and prompt_tokens:
+            return cached / prompt_tokens
+    return None
+
+
+class UsageTracker:
+    """从 SSE 或普通 JSON 响应中旁路提取 usage，不影响原始字节透传。"""
+
+    def __init__(self, content_type):
+        self.is_sse = "text/event-stream" in (content_type or "").lower()
+        self.buffer = b""
+        self.usage = {}
+        self.too_large = False
+
+    def _consume_json(self, raw):
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            _merge_usage(self.usage, usage)
+        # Anthropic 的 message_start 把 usage 放在 message 对象内。
+        message = payload.get("message")
+        if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+            _merge_usage(self.usage, message["usage"])
+
+    def feed(self, chunk):
+        if self.too_large:
+            return
+        self.buffer += chunk
+        if not self.is_sse:
+            if len(self.buffer) > USAGE_JSON_MAX_BYTES:
+                self.buffer = b""
+                self.too_large = True
+            return
+
+        # SSE 的 data 行可能跨 requests.iter_content 的任意 chunk 边界。
+        lines = self.buffer.splitlines(keepends=True)
+        if lines and not lines[-1].endswith((b"\n", b"\r")):
+            self.buffer = lines.pop()
+        else:
+            self.buffer = b""
+        for line in lines:
+            line = line.strip()
+            if line.startswith(b"data:"):
+                data = line[5:].strip()
+                if data and data != b"[DONE]":
+                    self._consume_json(data)
+
+    def finish(self):
+        if self.buffer and not self.too_large:
+            if self.is_sse:
+                line = self.buffer.strip()
+                if line.startswith(b"data:"):
+                    self._consume_json(line[5:].strip())
+            else:
+                self._consume_json(self.buffer)
+        return self.usage
+
+
+def log_usage(model, usage):
+    """记录原始 usage，并给缓存字段补充统一命中率。"""
+    if not usage:
+        logger.info("usage model=%s 未找到", model)
+        return
+    hit_rate = _cache_hit_rate(usage)
+    suffix = "" if hit_rate is None else " cache_hit_rate=%.2f%%" % (hit_rate * 100)
+    logger.info("usage model=%s data=%s%s", model,
+                json.dumps(usage, ensure_ascii=False, sort_keys=True), suffix)
 
 # ---------- 环境变量(运行时由 main() 校验并赋值) ----------
 NEW_API_BASE_URL = ""
@@ -272,13 +370,18 @@ def transparent_proxy(full_path):
         log_response(upstream_resp.status_code, time.monotonic() - start)
 
     resp_headers = _strip_upstream_headers(upstream_resp.headers)
+    usage_tracker = UsageTracker(upstream_resp.headers.get("Content-Type", ""))
 
     def stream():
         try:
             for chunk in upstream_resp.iter_content(chunk_size=CHUNK_SIZE):
                 if chunk:
+                    if is_debug_enabled():
+                        usage_tracker.feed(chunk)
                     yield chunk
         finally:
+            if is_debug_enabled():
+                log_usage(target, usage_tracker.finish())
             upstream_resp.close()
 
     return Response(stream(), status=upstream_resp.status_code, headers=resp_headers)

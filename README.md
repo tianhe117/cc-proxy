@@ -20,6 +20,10 @@ docker compose up -d
 
 如需开启 DEBUG 日志,在 `.env` 中设置 `DEBUG=true` 后重启容器。
 
+DEBUG 日志会旁路记录上游响应中的 `usage`，不改变流式响应内容。Anthropic
+流式响应分散在 `message_start` / `message_delta` 中的 token 数据会自动合并；若响应
+包含缓存 token 字段，还会记录统一的 `cache_hit_rate`，便于比较不同系统和模型。
+
 后续更新:
 
 ```bash
