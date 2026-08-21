@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import threading
 import time
 
@@ -88,10 +89,10 @@ def log_response(status, elapsed):
 # ---------- 环境变量(运行时由 main() 校验并赋值) ----------
 NEW_API_BASE_URL = ""
 NEW_API_KEY = ""
-PROXY_KEY = ""
+PROXY_KEYS = []          # 解析后的多 key 列表
 # ---------- 配置状态(启动时由 init_config() 填充) ----------
 config_lock = threading.Lock()
-config = {"model": None}
+config = {"keys": {}}    # {"keys": {"<key>": {"model": "..."}}}
 
 
 def load_config_from_file(path):
@@ -110,17 +111,17 @@ def save_config_atomic(cfg, path):
     os.replace(tmp, path)
 
 
-def get_model():
+def get_model(key):
     with config_lock:
-        return config["model"]
+        entry = config["keys"].get(key, {})
+        return entry.get("model")
 
 
-def set_model(model):
-    """更新内存并持久化,立即对后续转发生效。"""
+def set_model(key, model):
+    """更新指定 key 的 model 并持久化,立即对后续转发生效。"""
     with config_lock:
-        config["model"] = model
-        cfg = dict(config)
-    save_config_atomic(cfg, CONFIG_FILE_PATH)
+        config["keys"][key] = {"model": model}
+        save_config_atomic(config, CONFIG_FILE_PATH)
 
 
 def fetch_models_from_upstream():
@@ -138,13 +139,18 @@ def fetch_models_from_upstream():
 
 # ---------- 鉴权 ----------
 def check_proxy_key(req):
-    """校验客户端 Authorization: Bearer <PROXY_KEY>。"""
+    """校验客户端 Authorization: Bearer <PROXY_KEY>,返回匹配的 key 或 None。"""
     auth = req.headers.get("Authorization", "")
-    try:
-        return hmac.compare_digest(auth, "Bearer " + PROXY_KEY)
-    except TypeError:
-        # compare_digest 对非 ASCII 字符串会抛 TypeError,统一按鉴权失败处理
-        return False
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.removeprefix("Bearer ")
+    for k in PROXY_KEYS:
+        try:
+            if hmac.compare_digest(token, k):
+                return k
+        except TypeError:
+            continue
+    return None
 
 
 # ---------- 请求体 / 头变换 ----------
@@ -190,14 +196,16 @@ app = Flask(__name__)
 
 @app.get("/_ccs/api/model")
 def api_get_model():
-    if not check_proxy_key(request):
+    key = check_proxy_key(request)
+    if not key:
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"model": get_model()})
+    return jsonify({"model": get_model(key)})
 
 
 @app.post("/_ccs/api/model")
 def api_set_model():
-    if not check_proxy_key(request):
+    key = check_proxy_key(request)
+    if not key:
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
@@ -206,13 +214,14 @@ def api_set_model():
     if not isinstance(model, str) or not model.strip():
         return jsonify({"error": "model 不能为空"}), 400
     model = model.strip()
-    set_model(model)
+    set_model(key, model)
     return jsonify({"status": "success", "model": model})
 
 
 @app.get("/_ccs/api/list")
 def api_list_models():
-    if not check_proxy_key(request):
+    key = check_proxy_key(request)
+    if not key:
         return jsonify({"error": "unauthorized"}), 401
     try:
         models = fetch_models_from_upstream()
@@ -224,12 +233,13 @@ def api_list_models():
 # ---------- 透明代理(捕获 /_ccs/ 之外的所有路径) ----------
 @app.route("/<path:full_path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 def transparent_proxy(full_path):
-    if not check_proxy_key(request):
+    key = check_proxy_key(request)
+    if not key:
         return jsonify({"error": "unauthorized"}), 401
 
     headers = _make_upstream_headers(request)
     raw = request.get_data()
-    target = get_model()
+    target = get_model(key)
     if is_debug_enabled():
         log_received(request, raw, target)
 
@@ -275,41 +285,53 @@ def transparent_proxy(full_path):
 
 
 # ---------- 启动引导 ----------
-def _init_from_upstream():
-    """从上游拉取模型列表,取第 1 个作为默认并持久化。"""
+def get_default_model():
+    """从上游拉取模型列表,返回第 1 个模型 id。"""
     models = fetch_models_from_upstream()
     if not models:
         raise RuntimeError("上游模型列表为空,无法确定默认 model")
-    cfg = {"model": models[0]}
-    save_config_atomic(cfg, CONFIG_FILE_PATH)
-    return cfg
+    return models[0]
 
 
 def init_config():
-    """config.json 存在→加载校验;不存在或读取失败→拉上游取第 1 个模型作为默认并持久化。"""
+    """config.json 存在且格式正确→加载;不存在或格式不正确→重建。
+    最后为缺失的 key 补齐默认 model 并持久化。"""
     global config
     if os.path.exists(CONFIG_FILE_PATH):
         try:
-            config = load_config_from_file(CONFIG_FILE_PATH)
-            if isinstance(config.get("model"), str) and config["model"]:
-                return
+            loaded = load_config_from_file(CONFIG_FILE_PATH)
+            if isinstance(loaded.get("keys"), dict):
+                config = loaded
+            else:
+                logger.warning("config.json 格式不正确,将重新生成")
         except (json.JSONDecodeError, OSError):
             logger.warning("config.json 读取失败,将从上游重新获取")
-    config = _init_from_upstream()
+
+    existing = config.get("keys", {})
+    missing = [k for k in PROXY_KEYS if k not in existing]
+    if missing:
+        default = get_default_model()
+        for k in missing:
+            existing[k] = {"model": default}
+        config["keys"] = existing
+        save_config_atomic(config, CONFIG_FILE_PATH)
 
 
 def main():
-    global NEW_API_BASE_URL, NEW_API_KEY, PROXY_KEY
+    global NEW_API_BASE_URL, NEW_API_KEY, PROXY_KEYS
     for name in ("NEW_API_BASE_URL", "NEW_API_KEY", "PROXY_KEY"):
         if not os.environ.get(name):
             raise RuntimeError("缺少必填环境变量: " + name)
     NEW_API_BASE_URL = os.environ["NEW_API_BASE_URL"].rstrip("/")
     NEW_API_KEY = os.environ["NEW_API_KEY"]
-    PROXY_KEY = os.environ["PROXY_KEY"]
-    try:
-        PROXY_KEY.encode("ascii")
-    except UnicodeEncodeError:
-        raise RuntimeError("PROXY_KEY 只能包含 ASCII 字符")
+    PROXY_KEYS = [k.strip() for k in re.split(r'[,\s]+', os.environ["PROXY_KEY"]) if k.strip()]
+    if not PROXY_KEYS:
+        raise RuntimeError("PROXY_KEY 不能为空,需至少一个 key")
+    for k in PROXY_KEYS:
+        try:
+            k.encode("ascii")
+        except UnicodeEncodeError:
+            raise RuntimeError("PROXY_KEY 中的 key 只能包含 ASCII 字符: " + k)
     init_config()
     app.run(host="0.0.0.0", port=8000, threaded=True)
 

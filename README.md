@@ -1,12 +1,12 @@
 # CC-Proxy
 
-单一 `model` 热切换的透明转发反向代理:转发 OpenAI 兼容请求到上游 New-API,并按需改写请求体里的 `model` 字段。
+单一 `model` 热切换的透明转发反向代理:转发 OpenAI 兼容请求到上游 New-API,并按需改写请求体里的 `model` 字段。支持多个 `PROXY_KEY`,每个 key 独立维护自己的 model。
 
 ## 环境变量
 
 - `NEW_API_BASE_URL` — 上游 New-API 网关地址,如 `https://your-new-api.com`
 - `NEW_API_KEY` — 访问上游网关的 API Key
-- `PROXY_KEY` — 客户端访问本代理时使用的 Key(仅 ASCII 字符)
+- `PROXY_KEY` — 客户端访问本代理时使用的 Key,支持逗号分隔多个 key(仅 ASCII 字符)
 
 ## 运行
 
@@ -68,10 +68,15 @@ curl http://localhost:8000/_ccs/api/list \
 配置持久化在 `app.py` 同目录下的 `config.json`,格式:
 
 ```json
-{"model": "deepseek-reasoner"}
+{
+  "keys": {
+    "sk-key-aaa": {"model": "deepseek-reasoner"},
+    "sk-key-bbb": {"model": "claude-sonnet-4-20250514"}
+  }
+}
 ```
 
-首次启动时自动从上游拉取模型列表并使用第 1 个;若文件不存在或读取失败也会自动重新获取。
+首次启动时自动从上游拉取模型列表,为每个 key 使用第 1 个;配置格式不正确时会自动重新生成。
 
 ## 反向代理要求
 
