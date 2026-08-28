@@ -7,6 +7,8 @@
 - `NEW_API_BASE_URL` — 上游 New-API 网关地址,如 `https://your-new-api.com`
 - `NEW_API_KEY` — 访问上游网关的 API Key
 - `PROXY_KEY` — 客户端访问本代理时使用的 Key,支持逗号分隔多个 key(仅 ASCII 字符)
+- `DEBUG` — 可选,设为 `true` 开启调试日志(落文件到 `logs/` 目录)
+- `UPSTREAM_SKIP_SSL_VERIFY` — 可选,设为 `true` 跳过上游 HTTPS 证书校验。用于自签名证书的上游,不安全,仅建议测试环境
 
 ## 运行
 
@@ -18,7 +20,7 @@
 docker compose up -d
 ```
 
-如需开启 DEBUG 日志,在 `.env` 中设置 `DEBUG=true` 后重启容器。
+如需开启 DEBUG 日志或跳过上游证书校验,在 `.env` 中设置 `DEBUG=true` / `UPSTREAM_SKIP_SSL_VERIFY=true` 后重启容器。
 
 后续更新:
 

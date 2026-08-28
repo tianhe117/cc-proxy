@@ -20,6 +20,8 @@ LOG_DIR = os.environ.get("LOG_DIR", os.path.join(_SCRIPT_DIR, "logs"))
 LOG_BODY_MAX_CHARS = 2000                             # 日志里 body 的最大字符数,超长截断
 LOGGER_NAME = "cc-proxy"
 
+UPSTREAM_VERIFY = True   # requests 的 verify 参数:false=跳过上游 HTTPS 证书校验,由 main() 解析 UPSTREAM_SKIP_SSL_VERIFY 后覆盖
+
 # ---------- 日志 ----------
 def _setup_logger():
     """按 DEBUG 环境变量决定是否落文件日志;默认 INFO 级(仅控制台)。"""
@@ -124,6 +126,12 @@ def set_model(key, model):
         save_config_atomic(config, CONFIG_FILE_PATH)
 
 
+def parse_upstream_verify():
+    """解析 UPSTREAM_SKIP_SSL_VERIFY:为 true 时返回 False(跳过校验),否则正常校验。"""
+    raw = os.environ.get("UPSTREAM_SKIP_SSL_VERIFY", "")
+    return raw.strip().lower() not in ("1", "true", "yes", "on")
+
+
 def fetch_models_from_upstream():
     """从上游拉取可用模型 id 列表。失败时抛异常,由调用方决定处理方式。"""
     url = NEW_API_BASE_URL + UPSTREAM_MODELS_PATH
@@ -131,6 +139,7 @@ def fetch_models_from_upstream():
         url,
         headers={"Authorization": "Bearer " + NEW_API_KEY},
         timeout=UPSTREAM_TIMEOUT,
+        verify=UPSTREAM_VERIFY,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -264,6 +273,7 @@ def transparent_proxy(full_path):
             data=body,
             stream=True,
             timeout=UPSTREAM_TIMEOUT,
+            verify=UPSTREAM_VERIFY,
         )
     except requests.RequestException as exc:
         return jsonify({"error": "upstream request failed", "detail": str(exc)}), 502
@@ -318,7 +328,7 @@ def init_config():
 
 
 def main():
-    global NEW_API_BASE_URL, NEW_API_KEY, PROXY_KEYS
+    global NEW_API_BASE_URL, NEW_API_KEY, PROXY_KEYS, UPSTREAM_VERIFY
     for name in ("NEW_API_BASE_URL", "NEW_API_KEY", "PROXY_KEY"):
         if not os.environ.get(name):
             raise RuntimeError("缺少必填环境变量: " + name)
@@ -332,6 +342,7 @@ def main():
             k.encode("ascii")
         except UnicodeEncodeError:
             raise RuntimeError("PROXY_KEY 中的 key 只能包含 ASCII 字符: " + k)
+    UPSTREAM_VERIFY = parse_upstream_verify()
     init_config()
     app.run(host="0.0.0.0", port=8000, threaded=True)
 
