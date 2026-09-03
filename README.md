@@ -38,6 +38,33 @@ python app.py
 
 服务监听 `0.0.0.0:8000`。
 
+## 客户端模型
+
+客户端统一填写 `claude-sonnet-5`。`GET /v1/models` 经代理 Key 鉴权后在本地返回这个固定别名,不会请求上游模型列表:
+
+```bash
+curl http://localhost:8000/v1/models \
+  -H "Authorization: Bearer $PROXY_KEY"
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "claude-sonnet-5",
+      "object": "model",
+      "created": 0,
+      "owned_by": "cc-proxy"
+    }
+  ]
+}
+```
+
+此名称仅为代理别名。实际转发时,请求体中的 `model` 仍按当前 `PROXY_KEY` 的配置替换为上游模型,例如 DeepSeek V4 或 GLM-5.3。通过管理接口切换后端模型后,客户端继续使用同一别名。
+
+上下文、图片和思考参数支持取决于实际后端与上游网关;别名不会增加这些能力。当前代理仅改写模型名称,不转换协议、适配思考参数或为图片请求单独选择视觉模型。
+
 ## 管理接口
 
 > 管理接口统一挂在 `/_ccs/` 前缀下,避免与 Claude Code / New-API 等工具的标准路径(`/v1/*`、`/api/*`)冲突。所有管理接口需携带 `Authorization: Bearer $PROXY_KEY`。

@@ -12,6 +12,7 @@ from flask import Flask, Response, jsonify, request
 
 # ---------- 常量 ----------
 UPSTREAM_MODELS_PATH = "/v1/models"   # New-API 为 OpenAI 兼容网关,标准复数端点;不同网关只改这里
+PUBLIC_MODEL_ID = "claude-sonnet-5"   # 客户端固定别名;实际转发模型仍由各 PROXY_KEY 的配置决定
 CHUNK_SIZE = 1024
 UPSTREAM_TIMEOUT = 300
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -203,6 +204,22 @@ def _strip_upstream_headers(headers):
 app = Flask(__name__)
 
 
+@app.get("/v1/models", strict_slashes=False)
+def public_list_models():
+    """本地返回固定模型别名,不暴露或查询上游模型列表。"""
+    if not check_proxy_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "object": "list",
+        "data": [{
+            "id": PUBLIC_MODEL_ID,
+            "object": "model",
+            "created": 0,
+            "owned_by": "cc-proxy",
+        }],
+    })
+
+
 @app.get("/_ccs/api/model")
 def api_get_model():
     key = check_proxy_key(request)
@@ -239,7 +256,7 @@ def api_list_models():
     return jsonify({"models": models})
 
 
-# ---------- 透明代理(捕获 /_ccs/ 之外的所有路径) ----------
+# ---------- 透明代理(处理未匹配专用路由的路径) ----------
 @app.route("/<path:full_path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 def transparent_proxy(full_path):
     key = check_proxy_key(request)
