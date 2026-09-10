@@ -12,7 +12,6 @@ from flask import Flask, Response, jsonify, request
 
 # ---------- 常量 ----------
 UPSTREAM_MODELS_PATH = "/v1/models"   # New-API 为 OpenAI 兼容网关,标准复数端点;不同网关只改这里
-PUBLIC_MODEL_ID = "claude-sonnet-5"   # 客户端固定别名;实际转发模型仍由各 PROXY_KEY 的配置决定
 CHUNK_SIZE = 1024
 UPSTREAM_TIMEOUT = 300
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -120,6 +119,15 @@ def get_model(key):
         return entry.get("model")
 
 
+def get_public_model_id(key):
+    """返回对客户端公开的模型 ID。
+
+    PUBLIC_MODEL_ID 设置且非空时作为固定别名;否则返回该 key 当前生效的上游模型。
+    """
+    override = os.environ.get("PUBLIC_MODEL_ID", "").strip()
+    return override or get_model(key)
+
+
 def set_model(key, model):
     """更新指定 key 的 model 并持久化,立即对后续转发生效。"""
     with config_lock:
@@ -206,13 +214,14 @@ app = Flask(__name__)
 
 @app.get("/v1/models", strict_slashes=False)
 def public_list_models():
-    """本地返回固定模型别名,不暴露或查询上游模型列表。"""
-    if not check_proxy_key(request):
+    """本地返回公开模型 ID,不查询上游模型列表。"""
+    key = check_proxy_key(request)
+    if not key:
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({
         "object": "list",
         "data": [{
-            "id": PUBLIC_MODEL_ID,
+            "id": get_public_model_id(key),
             "object": "model",
             "created": 0,
             "owned_by": "cc-proxy",

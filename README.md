@@ -7,6 +7,7 @@
 - `NEW_API_BASE_URL` — 上游 New-API 网关地址,如 `https://your-new-api.com`
 - `NEW_API_KEY` — 访问上游网关的 API Key
 - `PROXY_KEY` — 客户端访问本代理时使用的 Key,支持逗号分隔多个 key(仅 ASCII 字符)
+- `PUBLIC_MODEL_ID` — 可选,对客户端公开的固定模型 ID;未设置或为空时,返回该 `PROXY_KEY` 当前生效的模型
 - `DEBUG` — 可选,设为 `true` 开启调试日志(落文件到 `logs/` 目录)
 - `UPSTREAM_SKIP_SSL_VERIFY` — 可选,设为 `true` 跳过上游 HTTPS 证书校验。用于自签名证书的上游,不安全,仅建议测试环境
 
@@ -40,7 +41,7 @@ python app.py
 
 ## 客户端模型
 
-客户端统一填写 `claude-sonnet-5`。`GET /v1/models` 经代理 Key 鉴权后在本地返回这个固定别名,不会请求上游模型列表:
+`GET /v1/models` 经代理 Key 鉴权后在本地返回模型 ID,不会请求上游模型列表。默认返回该 `PROXY_KEY` 当前生效的模型:
 
 ```bash
 curl http://localhost:8000/v1/models \
@@ -52,7 +53,7 @@ curl http://localhost:8000/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "claude-sonnet-5",
+      "id": "deepseek-reasoner",
       "object": "model",
       "created": 0,
       "owned_by": "cc-proxy"
@@ -61,7 +62,7 @@ curl http://localhost:8000/v1/models \
 }
 ```
 
-此名称仅为代理别名。实际转发时,请求体中的 `model` 仍按当前 `PROXY_KEY` 的配置替换为上游模型,例如 DeepSeek V4 或 GLM-5.3。通过管理接口切换后端模型后,客户端继续使用同一别名。
+如果客户端需要稳定的固定别名,可设置 `PUBLIC_MODEL_ID=claude-sonnet-5`。此时 `/v1/models` 始终返回该别名,但实际转发时,请求体中的 `model` 仍按当前 `PROXY_KEY` 的配置替换为上游模型。
 
 上下文、图片和思考参数支持取决于实际后端与上游网关;别名不会增加这些能力。当前代理仅改写模型名称,不转换协议、适配思考参数或为图片请求单独选择视觉模型。
 
