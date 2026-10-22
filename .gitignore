@@ -3,7 +3,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# 打包输出
+/dist/
+
 # 项目运行时配置与数据
 config.json
+/tray.json
 logs/
 .env
